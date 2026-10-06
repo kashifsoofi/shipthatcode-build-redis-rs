@@ -9,6 +9,9 @@ fn eb(s: Option<&str>) -> String {
 fn es(s: &str) -> String {
     format!("+{}\r\n", s)
 }
+fn ee(m: &str) -> String {
+    format!("-{}\r\n", m)
+}
 
 fn parse_args(line: &str) -> Vec<String> {
     let mut args = Vec::new();
@@ -43,7 +46,12 @@ fn handle(args: &[String]) -> String {
             }
         }
         "ECHO" => eb(Some(&args[1])),
-        _ => format!("-ERR unknown command '{}'\r\n", args[0]),
+        "COMMAND" => es("OK"),
+        _ => {
+            // TODO: Return error for unknown commands using ee()
+            // Format: "ERR unknown command '<cmd>'"
+            ee(&format!("ERR unknown command '{}'", cmd).to_string())
+        }
     }
 }
 
