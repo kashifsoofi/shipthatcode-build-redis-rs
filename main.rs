@@ -39,19 +39,31 @@ fn handle(args: &[String]) -> String {
     let cmd = args[0].to_uppercase();
     match cmd.as_str() {
         "PING" => {
+            if args.len() > 1 {
+                return ee(&format!(
+                    "ERR wrong number of arguments for '{}' command",
+                    args[0].to_lowercase()
+                ));
+            }
+
             if args.len() == 1 {
                 es("PONG")
             } else {
                 eb(Some(&args[1]))
             }
         }
-        "ECHO" => eb(Some(&args[1])),
-        "COMMAND" => es("OK"),
-        _ => {
-            // TODO: Return error for unknown commands using ee()
-            // Format: "ERR unknown command '<cmd>'"
-            ee(&format!("ERR unknown command '{}'", cmd).to_string())
+        "ECHO" => {
+            if args.len() != 2 {
+                return ee(&format!(
+                    "ERR wrong number of arguments for '{}' command",
+                    args[0]
+                ));
+            }
+
+            eb(Some(&args[1]))
         }
+        "COMMAND" => es("OK"),
+        _ => ee(&format!("ERR unknown command '{}'", args[0])),
     }
 }
 
