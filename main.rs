@@ -52,14 +52,27 @@ fn handle(args: &[String], store: &mut HashMap<String, String>) -> String {
         "ECHO" => eb(Some(&args[1])),
         "COMMAND" => es("OK"),
         "SET" => {
-            store.insert(args[1].clone(), args[2].clone());
+            let key = &args[1];
+            let val = &args[2];
+            let flags: Vec<String> = args[3..].iter().map(|a| a.to_uppercase()).collect();
+            if flags.contains(&"NX".to_string()) {
+                if store.contains_key(&key.to_string()) {
+                    return eb(None);
+                }
+            }
+
+            if flags.contains(&"XX".to_string()) {
+                if !store.contains_key(&key.to_string()) {
+                    return eb(None);
+                }
+            }
+            // TODO: If NX flag present and key already exists, return "$-1\r\n"
+            // TODO: If XX flag present and key does NOT exist, return "$-1\r\n"
+            store.insert(key.clone(), val.clone());
             es("OK")
         }
         "GET" => eb(store.get(&args[1]).map(|s| s.as_str())),
-        "DBSIZE" => {
-            let size = store.len();
-            ei(size as i64)
-        }
+        "DBSIZE" => ei(store.len() as i64),
         _ => ee(&format!("ERR unknown command '{}'", args[0])),
     }
 }
