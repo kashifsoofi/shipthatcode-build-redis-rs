@@ -55,9 +55,10 @@ fn handle(args: &[String], store: &mut HashMap<String, String>) -> String {
             store.insert(args[1].clone(), args[2].clone());
             es("OK")
         }
-        "GET" => {
-            let value = store.get(&args[1]);
-            eb(value.map(|x| x.as_str()))
+        "GET" => eb(store.get(&args[1]).map(|s| s.as_str())),
+        "DBSIZE" => {
+            let size = store.len();
+            ei(size as i64)
         }
         _ => ee(&format!("ERR unknown command '{}'", args[0])),
     }
