@@ -52,27 +52,69 @@ fn handle(args: &[String], store: &mut HashMap<String, String>) -> String {
         "ECHO" => eb(Some(&args[1])),
         "COMMAND" => es("OK"),
         "SET" => {
-            let key = &args[1];
-            let val = &args[2];
+            let (key, val) = (&args[1], &args[2]);
             let flags: Vec<String> = args[3..].iter().map(|a| a.to_uppercase()).collect();
-            if flags.contains(&"NX".to_string()) {
-                if store.contains_key(&key.to_string()) {
-                    return eb(None);
-                }
+            if flags.contains(&"NX".into()) && store.contains_key(key) {
+                return "$-1\r\n".into();
             }
-
-            if flags.contains(&"XX".to_string()) {
-                if !store.contains_key(&key.to_string()) {
-                    return eb(None);
-                }
+            if flags.contains(&"XX".into()) && !store.contains_key(key) {
+                return "$-1\r\n".into();
             }
-            // TODO: If NX flag present and key already exists, return "$-1\r\n"
-            // TODO: If XX flag present and key does NOT exist, return "$-1\r\n"
             store.insert(key.clone(), val.clone());
             es("OK")
         }
         "GET" => eb(store.get(&args[1]).map(|s| s.as_str())),
         "DBSIZE" => ei(store.len() as i64),
+        "INCR" => {
+            let value = store.entry(args[1].clone()).or_insert("0".to_string());
+            let parsed = value.parse::<i64>();
+            match parsed {
+                Ok(v) => {
+                    let v = v + 1;
+                    *value = v.to_string();
+                    ei(v as i64)
+                }
+                Err(_e) => ee("ERR value is not an integer or out of range"),
+            }
+        }
+        "DECR" => {
+            let value = store.entry(args[1].clone()).or_insert("0".to_string());
+            let parsed = value.parse::<i64>();
+            match parsed {
+                Ok(v) => {
+                    let v = v - 1;
+                    *value = v.to_string();
+                    ei(v as i64)
+                }
+                Err(_e) => ee("ERR value is not an integer or out of range"),
+            }
+        }
+        "INCRBY" => {
+            let value = store.entry(args[1].clone()).or_insert("0".to_string());
+            let parsed = value.parse::<i64>();
+            let new_parsed = args[2].parse::<i64>();
+            match (parsed, new_parsed) {
+                (Ok(v), Ok(i)) => {
+                    let v = v + i;
+                    *value = v.to_string();
+                    ei(v as i64)
+                }
+                (_, _) => ee("ERR value is not an integer or out of range"),
+            }
+        }
+        "DECRBY" => {
+            let value = store.entry(args[1].clone()).or_insert("0".to_string());
+            let parsed = value.parse::<i64>();
+            let new_parsed = args[2].parse::<i64>();
+            match (parsed, new_parsed) {
+                (Ok(v), Ok(d)) => {
+                    let v = v - d;
+                    *value = v.to_string();
+                    ei(v as i64)
+                }
+                (_, _) => ee("ERR value is not an integer or out of range"),
+            }
+        }
         _ => ee(&format!("ERR unknown command '{}'", args[0])),
     }
 }
