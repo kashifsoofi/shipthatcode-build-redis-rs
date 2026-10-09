@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{self, BufRead, Write};
 
 fn eb(s: Option<&str>) -> String {
@@ -15,6 +15,13 @@ fn ee(m: &str) -> String {
 }
 fn ei(n: i64) -> String {
     format!(":{}\r\n", n)
+}
+fn ea(items: &[String]) -> String {
+    let mut r = format!("*{}\r\n", items.len());
+    for i in items {
+        r.push_str(i);
+    }
+    r
 }
 
 fn parse_args(line: &str) -> Vec<String> {
@@ -41,34 +48,32 @@ fn parse_args(line: &str) -> Vec<String> {
 
 struct State {
     store: HashMap<String, String>,
-    expiry: HashMap<String, i64>,
-    clock: i64,
+    lists: HashMap<String, VecDeque<String>>,
+    key_types: HashMap<String, String>,
 }
 impl State {
     fn new() -> Self {
         State {
             store: HashMap::new(),
-            expiry: HashMap::new(),
-            clock: 0,
+            lists: HashMap::new(),
+            key_types: HashMap::new(),
         }
     }
-    fn check_expiry(&mut self, key: &str) {
-        if let Some(&exp) = self.expiry.get(key) {
-            if self.clock >= exp {
-                self.store.remove(key);
-                self.expiry.remove(key);
+    fn check_type(&self, key: &str, expected: &str) -> Option<String> {
+        if let Some(t) = self.key_types.get(key) {
+            if t != expected {
+                return Some(ee(
+                    "WRONGTYPE Operation against a key holding the wrong kind of value",
+                ));
             }
         }
+        None
     }
 }
 
 fn handle(args: &[String], st: &mut State) -> String {
     let cmd = args[0].to_uppercase();
     match cmd.as_str() {
-        "WAIT" => {
-            st.clock += args[1].parse::<i64>().unwrap_or(0);
-            es("OK")
-        }
         "PING" => {
             if args.len() == 1 {
                 es("PONG")
@@ -79,89 +84,67 @@ fn handle(args: &[String], st: &mut State) -> String {
         "ECHO" => eb(Some(&args[1])),
         "COMMAND" => es("OK"),
         "SET" => {
-            let (key, val) = (args[1].clone(), args[2].clone());
-            let mut ex_ms: Option<i64> = None;
-            let mut i = 3;
-            while i < args.len() {
-                match args[i].to_uppercase().as_str() {
-                    "EX" => {
-                        ex_ms = Some(args[i + 1].parse::<i64>().unwrap_or(0) * 1000);
-                        i += 2;
-                    }
-                    "PX" => {
-                        ex_ms = Some(args[i + 1].parse::<i64>().unwrap_or(0));
-                        i += 2;
-                    }
-                    _ => {
-                        i += 1;
-                    }
-                }
-            }
-            st.store.insert(key.clone(), val);
-            if let Some(ms) = ex_ms {
-                st.expiry.insert(key, st.clock + ms);
-            }
+            st.store.insert(args[1].clone(), args[2].clone());
+            st.key_types.insert(args[1].clone(), "string".into());
             es("OK")
         }
-        "GET" => {
-            // TODO: Call check_expiry before accessing
-            st.check_expiry(&args[1]);
-            eb(st.store.get(&args[1]).map(|s| s.as_str()))
-        }
-        "EXISTS" => {
-            let mut i = 3;
-            let mut count = 0;
+        "GET" => eb(st.store.get(&args[1]).map(|s| s.as_str())),
+        "LPUSH" => {
+            let key = &args[1];
+            if let Some(e) = st.check_type(key, "list") {
+                return e;
+            }
+            let deq = st.lists.entry(key.clone()).or_insert(VecDeque::new());
+            if !st.key_types.contains_key(key) {
+                st.key_types.insert(key.clone(), "list".into());
+            }
+            let mut i = 2;
             while i < args.len() {
-                st.check_expiry(&args[1]);
-                if st.store.contains_key(&args[1]) {
-                    count += 1
-                }
+                let v = args[i].clone();
+                deq.push_front(v);
                 i += 1;
             }
-            ei(count)
+            ei(deq.len() as i64)
         }
-        "TTL" => {
-            st.check_expiry(&args[1]);
-            if !st.store.contains_key(&args[1]) {
-                return ei(-2);
+        "RPUSH" => {
+            let key = &args[1];
+            if let Some(e) = st.check_type(key, "list") {
+                return e;
             }
-            match st.expiry.get(&args[1]) {
-                None => ei(-1),
-                Some(&exp) => ei(std::cmp::max(0, (exp - st.clock) / 1000)),
+            let deq = st.lists.entry(key.clone()).or_insert(VecDeque::new());
+            if !st.key_types.contains_key(key) {
+                st.key_types.insert(key.clone(), "list".into());
             }
+            let mut i = 2;
+            while i < args.len() {
+                let v = args[i].clone();
+                deq.push_back(v);
+                i += 1;
+            }
+            ei(deq.len() as i64)
         }
-        "PTTL" => {
-            st.check_expiry(&args[1]);
-            if !st.store.contains_key(&args[1]) {
-                return ei(-2);
+        "LRANGE" => {
+            let key = &args[1];
+            if !st.lists.contains_key(key) {
+                return "*0\r\n".into();
             }
-            match st.expiry.get(&args[1]) {
-                None => ei(-1),
-                Some(&exp) => ei(std::cmp::max(0, exp - st.clock)),
+            let lst: Vec<String> = st.lists[key].iter().cloned().collect();
+            let len = lst.len() as i64;
+            let mut s = args[2].parse::<i64>().unwrap_or(0);
+            let mut e = args[3].parse::<i64>().unwrap_or(0);
+            if s < 0 {
+                s = std::cmp::max(0, len + s);
             }
-        }
-        "EXPIRE" => {
-            st.check_expiry(&args[1]);
-            if !st.store.contains_key(&args[1]) {
-                return ei(0);
+            if e < 0 {
+                e = len + e;
             }
-            let secs = args[2].parse::<i64>().unwrap_or(0);
-            st.expiry.insert(args[1].clone(), st.clock + secs * 1000);
-            ei(1)
-        }
-        "PERSIST" => {
-            if st.expiry.remove(&args[1]).is_some() {
-                ei(1)
-            } else {
-                ei(0)
+            let s = s as usize;
+            let e = std::cmp::min(e as usize + 1, lst.len());
+            if s >= e {
+                return "*0\r\n".into();
             }
-        }
-        "DBSIZE" => {
-            // TODO: Count only non-expired keys (check expiry for each)
-            for (key, _) in st.expiry.clone() {
-                st.check_expiry(&key);
-            }
-            ei(st.store.len() as i64)
+            let items: Vec<String> = lst[s..e].iter().map(|x| eb(Some(x))).collect();
+            ea(&items)
         }
         _ => ee(&format!("ERR unknown command '{}'", args[0])),
     }
