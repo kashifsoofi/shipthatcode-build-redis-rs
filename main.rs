@@ -69,6 +69,14 @@ impl State {
         }
         None
     }
+    fn auto_delete_list(&mut self, key: &str) {
+        if let Some(lst) = self.lists.get(key) {
+            if lst.is_empty() {
+                self.lists.remove(key);
+                self.key_types.remove(key);
+            }
+        }
+    }
 }
 
 fn handle(args: &[String], st: &mut State) -> String {
@@ -94,34 +102,53 @@ fn handle(args: &[String], st: &mut State) -> String {
             if let Some(e) = st.check_type(key, "list") {
                 return e;
             }
-            let deq = st.lists.entry(key.clone()).or_insert(VecDeque::new());
-            if !st.key_types.contains_key(key) {
-                st.key_types.insert(key.clone(), "list".into());
+            let lst = st.lists.entry(key.clone()).or_insert_with(VecDeque::new);
+            st.key_types
+                .entry(key.clone())
+                .or_insert_with(|| "list".into());
+            for v in &args[2..] {
+                lst.push_front(v.clone());
             }
-            let mut i = 2;
-            while i < args.len() {
-                let v = args[i].clone();
-                deq.push_front(v);
-                i += 1;
-            }
-            ei(deq.len() as i64)
+            ei(lst.len() as i64)
         }
         "RPUSH" => {
             let key = &args[1];
             if let Some(e) = st.check_type(key, "list") {
                 return e;
             }
-            let deq = st.lists.entry(key.clone()).or_insert(VecDeque::new());
-            if !st.key_types.contains_key(key) {
-                st.key_types.insert(key.clone(), "list".into());
+            let lst = st.lists.entry(key.clone()).or_insert_with(VecDeque::new);
+            st.key_types
+                .entry(key.clone())
+                .or_insert_with(|| "list".into());
+            for v in &args[2..] {
+                lst.push_back(v.clone());
             }
-            let mut i = 2;
-            while i < args.len() {
-                let v = args[i].clone();
-                deq.push_back(v);
-                i += 1;
+            ei(lst.len() as i64)
+        }
+        "LPOP" => {
+            let key = &args[1];
+            if !st.lists.contains_key(key) {
+                return eb(None);
             }
-            ei(deq.len() as i64)
+            let lst = st.lists.entry(key.clone()).or_insert_with(VecDeque::new);
+            let v = lst.pop_front();
+            st.auto_delete_list(&key.clone());
+            eb(v.as_deref())
+        }
+        "RPOP" => {
+            let key = &args[1];
+            if !st.lists.contains_key(key) {
+                return eb(None);
+            }
+            let lst = st.lists.entry(key.clone()).or_insert_with(VecDeque::new);
+            let v = lst.pop_back();
+            st.auto_delete_list(&key.clone());
+            eb(v.as_deref())
+        }
+        "LLEN" => {
+            let key = &args[1];
+            let lst = st.lists.entry(key.clone()).or_insert_with(VecDeque::new);
+            ei(lst.len() as i64)
         }
         "LRANGE" => {
             let key = &args[1];
