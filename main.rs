@@ -39,9 +39,49 @@ fn parse_args(line: &str) -> Vec<String> {
     args
 }
 
-fn handle(args: &[String], store: &mut HashMap<String, String>) -> String {
+struct State {
+    store: HashMap<String, String>,
+    expiry: HashMap<String, i64>, // key -> absolute ms timestamp
+    clock: i64,                   // simulated clock in ms
+}
+
+impl State {
+    fn new() -> Self {
+        State {
+            store: HashMap::new(),
+            expiry: HashMap::new(),
+            clock: 0,
+        }
+    }
+    fn check_expiry(&mut self, key: &str) {
+        if let Some(&exp) = self.expiry.get(key) {
+            if self.clock >= exp {
+                self.store.remove(key);
+                self.expiry.remove(key);
+            }
+        }
+    }
+}
+
+fn incr_by(store: &mut HashMap<String, String>, key: &str, delta: i64) -> String {
+    let cur = store.get(key).map(|s| s.as_str()).unwrap_or("0");
+    match cur.parse::<i64>() {
+        Ok(v) => {
+            let n = v + delta;
+            store.insert(key.into(), n.to_string());
+            ei(n)
+        }
+        Err(_) => ee("ERR value is not an integer or out of range"),
+    }
+}
+
+fn handle(args: &[String], st: &mut State) -> String {
     let cmd = args[0].to_uppercase();
     match cmd.as_str() {
+        "WAIT" => {
+            st.clock += args[1].parse::<i64>().unwrap_or(0);
+            es("OK")
+        }
         "PING" => {
             if args.len() == 1 {
                 es("PONG")
@@ -54,66 +94,59 @@ fn handle(args: &[String], store: &mut HashMap<String, String>) -> String {
         "SET" => {
             let (key, val) = (&args[1], &args[2]);
             let flags: Vec<String> = args[3..].iter().map(|a| a.to_uppercase()).collect();
-            if flags.contains(&"NX".into()) && store.contains_key(key) {
+            if flags.contains(&"NX".into()) && st.store.contains_key(key) {
                 return "$-1\r\n".into();
             }
-            if flags.contains(&"XX".into()) && !store.contains_key(key) {
+            if flags.contains(&"XX".into()) && !st.store.contains_key(key) {
                 return "$-1\r\n".into();
             }
-            store.insert(key.clone(), val.clone());
+            st.store.insert(key.clone(), val.clone());
             es("OK")
         }
-        "GET" => eb(store.get(&args[1]).map(|s| s.as_str())),
-        "DBSIZE" => ei(store.len() as i64),
-        "INCR" => {
-            let value = store.entry(args[1].clone()).or_insert("0".to_string());
-            let parsed = value.parse::<i64>();
-            match parsed {
-                Ok(v) => {
-                    let v = v + 1;
-                    *value = v.to_string();
-                    ei(v as i64)
-                }
-                Err(_e) => ee("ERR value is not an integer or out of range"),
-            }
+        "GET" => {
+            st.check_expiry(&args[1]);
+            eb(st.store.get(&args[1]).map(|s| s.as_str()))
         }
-        "DECR" => {
-            let value = store.entry(args[1].clone()).or_insert("0".to_string());
-            let parsed = value.parse::<i64>();
-            match parsed {
-                Ok(v) => {
-                    let v = v - 1;
-                    *value = v.to_string();
-                    ei(v as i64)
-                }
-                Err(_e) => ee("ERR value is not an integer or out of range"),
-            }
-        }
+        "DBSIZE" => ei(st.store.len() as i64),
+        "INCR" => incr_by(&mut st.store, &args[1], 1),
+        "DECR" => incr_by(&mut st.store, &args[1], -1),
         "INCRBY" => {
-            let value = store.entry(args[1].clone()).or_insert("0".to_string());
-            let parsed = value.parse::<i64>();
-            let new_parsed = args[2].parse::<i64>();
-            match (parsed, new_parsed) {
-                (Ok(v), Ok(i)) => {
-                    let v = v + i;
-                    *value = v.to_string();
-                    ei(v as i64)
-                }
-                (_, _) => ee("ERR value is not an integer or out of range"),
-            }
+            let d = args[2].parse::<i64>().unwrap_or(0);
+            incr_by(&mut st.store, &args[1], d)
         }
         "DECRBY" => {
-            let value = store.entry(args[1].clone()).or_insert("0".to_string());
-            let parsed = value.parse::<i64>();
-            let new_parsed = args[2].parse::<i64>();
-            match (parsed, new_parsed) {
-                (Ok(v), Ok(d)) => {
-                    let v = v - d;
-                    *value = v.to_string();
-                    ei(v as i64)
-                }
-                (_, _) => ee("ERR value is not an integer or out of range"),
+            let d = args[2].parse::<i64>().unwrap_or(0);
+            incr_by(&mut st.store, &args[1], -d)
+        }
+        "EXPIRE" => {
+            let (key, val) = (&args[1], &args[2]);
+            st.check_expiry(&args[1]);
+            if st.store.contains_key(key) {
+                let d = val.parse::<i64>().unwrap_or(0);
+                st.expiry.insert(key.clone(), d * 1000);
+                return ei(1);
             }
+            ei(0)
+        }
+        "TTL" => {
+            let key = &args[1];
+            st.check_expiry(key);
+            if !st.store.contains_key(key) {
+                return ei(-2);
+            }
+            match st.expiry.get(key) {
+                Some(exp) => ei((exp - st.clock) / 1000),
+                None => ei(-1),
+            }
+        }
+        "PERSIST" => {
+            let key = &args[1];
+            st.check_expiry(key);
+            if st.expiry.contains_key(key) {
+                st.expiry.remove(key);
+                return ei(1);
+            }
+            ei(0)
         }
         _ => ee(&format!("ERR unknown command '{}'", args[0])),
     }
@@ -123,7 +156,7 @@ fn main() {
     let sin = io::stdin();
     let sout = io::stdout();
     let mut out = sout.lock();
-    let mut store = HashMap::new();
+    let mut st = State::new();
     for line in sin.lock().lines() {
         let line = line.unwrap();
         let line = line.trim().to_string();
@@ -131,7 +164,7 @@ fn main() {
             continue;
         }
         let args = parse_args(&line);
-        write!(out, "{}", handle(&args, &mut store)).unwrap();
+        write!(out, "{}", handle(&args, &mut st)).unwrap();
         out.flush().unwrap();
     }
 }
