@@ -41,10 +41,9 @@ fn parse_args(line: &str) -> Vec<String> {
 
 struct State {
     store: HashMap<String, String>,
-    expiry: HashMap<String, i64>, // key -> absolute ms timestamp
-    clock: i64,                   // simulated clock in ms
+    expiry: HashMap<String, i64>,
+    clock: i64,
 }
-
 impl State {
     fn new() -> Self {
         State {
@@ -92,15 +91,47 @@ fn handle(args: &[String], st: &mut State) -> String {
         "ECHO" => eb(Some(&args[1])),
         "COMMAND" => es("OK"),
         "SET" => {
-            let (key, val) = (&args[1], &args[2]);
-            let flags: Vec<String> = args[3..].iter().map(|a| a.to_uppercase()).collect();
-            if flags.contains(&"NX".into()) && st.store.contains_key(key) {
+            let (key, val) = (args[1].clone(), args[2].clone());
+            // Parse flags: NX, XX, EX <sec>, PX <ms>
+            let mut nx = false;
+            let mut xx = false;
+            let mut ex_ms: Option<i64> = None;
+            let mut i = 3;
+            while i < args.len() {
+                match args[i].to_uppercase().as_str() {
+                    "NX" => {
+                        nx = true;
+                        i += 1;
+                    }
+                    "XX" => {
+                        xx = true;
+                        i += 1;
+                    }
+                    "EX" => {
+                        let d = args[i + 1].parse::<i64>().unwrap_or(0);
+                        ex_ms = Some(d * 1000);
+                        i += 2;
+                    }
+                    "PX" => {
+                        let d = args[i + 1].parse::<i64>().unwrap_or(0);
+                        ex_ms = Some(d);
+                        i += 2;
+                    }
+                    _ => {
+                        i += 1;
+                    }
+                }
+            }
+            if nx && st.store.contains_key(&key) {
                 return "$-1\r\n".into();
             }
-            if flags.contains(&"XX".into()) && !st.store.contains_key(key) {
+            if xx && !st.store.contains_key(&key) {
                 return "$-1\r\n".into();
             }
-            st.store.insert(key.clone(), val.clone());
+            st.store.insert(key.clone(), val);
+            if let Some(ms) = ex_ms {
+                st.expiry.insert(key, st.clock + ms);
+            }
             es("OK")
         }
         "GET" => {
@@ -119,34 +150,40 @@ fn handle(args: &[String], st: &mut State) -> String {
             incr_by(&mut st.store, &args[1], -d)
         }
         "EXPIRE" => {
-            let (key, val) = (&args[1], &args[2]);
             st.check_expiry(&args[1]);
-            if st.store.contains_key(key) {
-                let d = val.parse::<i64>().unwrap_or(0);
-                st.expiry.insert(key.clone(), d * 1000);
-                return ei(1);
+            if !st.store.contains_key(&args[1]) {
+                return ei(0);
             }
-            ei(0)
+            let secs = args[2].parse::<i64>().unwrap_or(0);
+            st.expiry.insert(args[1].clone(), st.clock + secs * 1000);
+            ei(1)
         }
         "TTL" => {
-            let key = &args[1];
-            st.check_expiry(key);
-            if !st.store.contains_key(key) {
+            st.check_expiry(&args[1]);
+            if !st.store.contains_key(&args[1]) {
                 return ei(-2);
             }
-            match st.expiry.get(key) {
-                Some(exp) => ei((exp - st.clock) / 1000),
+            match st.expiry.get(&args[1]) {
                 None => ei(-1),
+                Some(&exp) => ei((exp - st.clock) / 1000),
+            }
+        }
+        "PTTL" => {
+            st.check_expiry(&args[1]);
+            if !st.store.contains_key(&args[1]) {
+                return ei(-2);
+            }
+            match st.expiry.get(&args[1]) {
+                None => ei(-1),
+                Some(&exp) => ei(exp - st.clock),
             }
         }
         "PERSIST" => {
-            let key = &args[1];
-            st.check_expiry(key);
-            if st.expiry.contains_key(key) {
-                st.expiry.remove(key);
-                return ei(1);
+            if st.expiry.remove(&args[1]).is_some() {
+                ei(1)
+            } else {
+                ei(0)
             }
-            ei(0)
         }
         _ => ee(&format!("ERR unknown command '{}'", args[0])),
     }
