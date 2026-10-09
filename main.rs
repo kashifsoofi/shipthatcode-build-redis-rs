@@ -62,18 +62,6 @@ impl State {
     }
 }
 
-fn incr_by(store: &mut HashMap<String, String>, key: &str, delta: i64) -> String {
-    let cur = store.get(key).map(|s| s.as_str()).unwrap_or("0");
-    match cur.parse::<i64>() {
-        Ok(v) => {
-            let n = v + delta;
-            store.insert(key.into(), n.to_string());
-            ei(n)
-        }
-        Err(_) => ee("ERR value is not an integer or out of range"),
-    }
-}
-
 fn handle(args: &[String], st: &mut State) -> String {
     let cmd = args[0].to_uppercase();
     match cmd.as_str() {
@@ -92,41 +80,22 @@ fn handle(args: &[String], st: &mut State) -> String {
         "COMMAND" => es("OK"),
         "SET" => {
             let (key, val) = (args[1].clone(), args[2].clone());
-            // Parse flags: NX, XX, EX <sec>, PX <ms>
-            let mut nx = false;
-            let mut xx = false;
             let mut ex_ms: Option<i64> = None;
             let mut i = 3;
             while i < args.len() {
                 match args[i].to_uppercase().as_str() {
-                    "NX" => {
-                        nx = true;
-                        i += 1;
-                    }
-                    "XX" => {
-                        xx = true;
-                        i += 1;
-                    }
                     "EX" => {
-                        let d = args[i + 1].parse::<i64>().unwrap_or(0);
-                        ex_ms = Some(d * 1000);
+                        ex_ms = Some(args[i + 1].parse::<i64>().unwrap_or(0) * 1000);
                         i += 2;
                     }
                     "PX" => {
-                        let d = args[i + 1].parse::<i64>().unwrap_or(0);
-                        ex_ms = Some(d);
+                        ex_ms = Some(args[i + 1].parse::<i64>().unwrap_or(0));
                         i += 2;
                     }
                     _ => {
                         i += 1;
                     }
                 }
-            }
-            if nx && st.store.contains_key(&key) {
-                return "$-1\r\n".into();
-            }
-            if xx && !st.store.contains_key(&key) {
-                return "$-1\r\n".into();
             }
             st.store.insert(key.clone(), val);
             if let Some(ms) = ex_ms {
@@ -135,19 +104,41 @@ fn handle(args: &[String], st: &mut State) -> String {
             es("OK")
         }
         "GET" => {
+            // TODO: Call check_expiry before accessing
             st.check_expiry(&args[1]);
             eb(st.store.get(&args[1]).map(|s| s.as_str()))
         }
-        "DBSIZE" => ei(st.store.len() as i64),
-        "INCR" => incr_by(&mut st.store, &args[1], 1),
-        "DECR" => incr_by(&mut st.store, &args[1], -1),
-        "INCRBY" => {
-            let d = args[2].parse::<i64>().unwrap_or(0);
-            incr_by(&mut st.store, &args[1], d)
+        "EXISTS" => {
+            let mut i = 3;
+            let mut count = 0;
+            while i < args.len() {
+                st.check_expiry(&args[1]);
+                if st.store.contains_key(&args[1]) {
+                    count += 1
+                }
+                i += 1;
+            }
+            ei(count)
         }
-        "DECRBY" => {
-            let d = args[2].parse::<i64>().unwrap_or(0);
-            incr_by(&mut st.store, &args[1], -d)
+        "TTL" => {
+            st.check_expiry(&args[1]);
+            if !st.store.contains_key(&args[1]) {
+                return ei(-2);
+            }
+            match st.expiry.get(&args[1]) {
+                None => ei(-1),
+                Some(&exp) => ei(std::cmp::max(0, (exp - st.clock) / 1000)),
+            }
+        }
+        "PTTL" => {
+            st.check_expiry(&args[1]);
+            if !st.store.contains_key(&args[1]) {
+                return ei(-2);
+            }
+            match st.expiry.get(&args[1]) {
+                None => ei(-1),
+                Some(&exp) => ei(std::cmp::max(0, exp - st.clock)),
+            }
         }
         "EXPIRE" => {
             st.check_expiry(&args[1]);
@@ -158,32 +149,19 @@ fn handle(args: &[String], st: &mut State) -> String {
             st.expiry.insert(args[1].clone(), st.clock + secs * 1000);
             ei(1)
         }
-        "TTL" => {
-            st.check_expiry(&args[1]);
-            if !st.store.contains_key(&args[1]) {
-                return ei(-2);
-            }
-            match st.expiry.get(&args[1]) {
-                None => ei(-1),
-                Some(&exp) => ei((exp - st.clock) / 1000),
-            }
-        }
-        "PTTL" => {
-            st.check_expiry(&args[1]);
-            if !st.store.contains_key(&args[1]) {
-                return ei(-2);
-            }
-            match st.expiry.get(&args[1]) {
-                None => ei(-1),
-                Some(&exp) => ei(exp - st.clock),
-            }
-        }
         "PERSIST" => {
             if st.expiry.remove(&args[1]).is_some() {
                 ei(1)
             } else {
                 ei(0)
             }
+        }
+        "DBSIZE" => {
+            // TODO: Count only non-expired keys (check expiry for each)
+            for (key, _) in st.expiry.clone() {
+                st.check_expiry(&key);
+            }
+            ei(st.store.len() as i64)
         }
         _ => ee(&format!("ERR unknown command '{}'", args[0])),
     }
